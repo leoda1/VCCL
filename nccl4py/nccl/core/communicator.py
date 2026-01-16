@@ -1244,7 +1244,7 @@ class Communicator:
             - sdispls (Sequence[int]): Element displacements in sendbuf for each rank (length == nranks).
             - recvcounts (Sequence[int]): Number of elements expected from each rank (length == nranks).
             - rdispls (Sequence[int]): Element displacements in recvbuf for each rank (length == nranks).
-            - relay_buffer (NcclBufferSpec | None): Optional relay buffer. Defaults to None.
+            - relaybuf (NcclBufferSpec | None): Optional relay buffer. Defaults to None.
             - stream (NcclStreamSpec, optional): CUDA stream for the operation. Defaults to None.
 
         """
