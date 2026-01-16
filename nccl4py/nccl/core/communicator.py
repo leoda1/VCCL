@@ -1262,10 +1262,10 @@ class Communicator:
         relay = None
         if relaybuf is not None:
             relay = NcclBuffer(relaybuf)
-            self._validate_buffer_device(relay, "relay_buffer")
+            self._validate_buffer_device(relay, "relaybuf")
             if relay.dtype != s.dtype:
                 raise NcclInvalid(
-                    f"Dtype mismatch: relay_buffer has dtype {relay.dtype}, expected {s.dtype}"
+                    f"Dtype mismatch: relaybuf has dtype {relay.dtype}, expected {s.dtype}"
                 )
 
         sendcounts_arr = _np.asarray(sendcounts, dtype=_np.int64)
