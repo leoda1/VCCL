@@ -444,7 +444,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
         // (ceRecvRankSameRail ---> sched.rank ---relay--> other_local_ranks)
         // Data received at sameRail rank needs to be distributed locally
         int ceRecvRankSameRail = comm->nodeRanks[ceRecvNode].localRankToRank[sched.localRank];
-        size_t relayToggleOffset = (batchIdx-1) % sched->relayChunks * sched.relayChunkBytes;
+        size_t relayToggleOffset = (batchIdx-1) % sched.relayChunks * sched.relayChunkBytes;
         size_t innerOffset = 0; // accumulated offset in relay buffer between multiple ranks on the same node
         for (int lr = 0; lr < sched.localRanks; lr++) {
           int destRank = comm->localRankToRank[lr];
@@ -567,7 +567,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
         {
           int sendNode = (sched.node + proxyNodeDelta) % sched.nNodes;
           int sendRankSameRail = comm->nodeRanks[sendNode].localRankToRank[sched.localRank];
-          size_t relayToggleOffset = batchIdx % sched->relayChunks * sched.relayChunkBytes;
+          size_t relayToggleOffset = batchIdx % sched.relayChunks * sched.relayChunkBytes;
           size_t innerOffset = 0; // accumulated offset in relay buffer between multiple ranks on the same node
           for (int lr = 0; lr < comm->nodeRanks[sendNode].localRanks; lr++) {
             int targetRank = comm->nodeRanks[sendNode].localRankToRank[lr];
