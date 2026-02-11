@@ -15,7 +15,6 @@
 
 typedef ncclResult_t (*NcclRmaFunc_t)(struct ncclComm*, ncclRmaWork*, cudaStream_t);
 
-NCCL_PARAM(RmaCollBarrier, "RMA_COLL_BARRIER", 1);
 NCCL_PARAM(RmaRelayChunks, "RMA_RELAY_CHUNKS", 2);
 
 // Helper function to dump RMA task queue
@@ -202,11 +201,6 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
   const char* relayEnv = ncclGetEnv("NCCL_RMA_RELAY_CHUNKS");
   bool relayChunksCustom = relayEnv && relayEnv[0] != '\0';
 
-  const char* barrierEnv = ncclGetEnv("NCCL_RMA_COLL_BARRIER");
-  bool useBarrier = barrierEnv ? (ncclParamRmaCollBarrier() != 0) : !relayChunksCustom;
-  if (useBarrier && comm->rank == 0) INFO(NCCL_COLL, "RMA Coll batch barrier enabled");
-  else INFO(NCCL_COLL, "RMA Coll batch barrier disabled");
-
   int batchIdx = 0;
   // Iterate through each RMA work batch
   struct ncclRmaWorkBatch* batch = ncclIntruQueueHead(&plan->rmaWorkBatchQueue);
@@ -265,9 +259,6 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
       cudaEvent_t workEvent = rmaCollState->rmaCollEvent[idx];
       CUDACHECKGOTO(cudaEventRecord(workEvent, workStream), ret, fail);
       CUDACHECKGOTO(cudaStreamWaitEvent(mainStream, workEvent, 0), ret, fail);
-    }
-    if (useBarrier) {
-      NCCLCHECKGOTO(bootstrapBarrier(comm->bootstrap, comm->rank, comm->nRanks, 0xBEEF + batchIdx), ret, fail);
     }
     batchIdx++;
     // Move to next batch
@@ -338,10 +329,6 @@ static ncclResult_t rmaCollTasksPrepare(
     size_t relayBytes = task->relaycounts * sched->eltSize;
     if (relayBytes == 0) {
       WARN("RMA coll: relaycounts is 0 for multi-node run");
-      return ncclInvalidArgument;
-    }
-    if (relayBytes % (size_t)sched->relayChunks != 0) {
-      WARN("RMA coll: relay buffer bytes %zu not divisible by relay chunks %d", relayBytes, sched->relayChunks);
       return ncclInvalidArgument;
     }
     sched->relayHalfBytes = relayBytes / (size_t)sched->relayChunks;
