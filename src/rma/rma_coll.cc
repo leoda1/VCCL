@@ -198,9 +198,6 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
     NCCLCHECK(ncclRmaCollInit(comm));
   }
 
-  const char* relayEnv = ncclGetEnv("NCCL_RMA_RELAY_CHUNKS");
-  bool relayChunksCustom = relayEnv && relayEnv[0] != '\0';
-
   int batchIdx = 0;
   // Iterate through each RMA work batch
   struct ncclRmaWorkBatch* batch = ncclIntruQueueHead(&plan->rmaWorkBatchQueue);
