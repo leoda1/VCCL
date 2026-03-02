@@ -288,6 +288,11 @@ static ncclResult_t ncclRmaProxyPollCompletion(ncclGin_t *ncclGin, struct ncclRm
       INFO(NCCL_COLL, "Rank %d ncclRmaProxyPollCompletion: targetRank=%d descSeq=%lu COMPLETED, updating doneSeq",
         ctx->comm->rank, inProgressDesc->targetRank, inProgressDesc->seq);
 
+      // Issue NVTX3_RANGE_POP if nvtxRange exists
+      if (inProgressDesc->nvtxRange != nullptr) {
+        delete inProgressDesc->nvtxRange;
+        inProgressDesc->nvtxRange = nullptr;
+      }
       // Update the doneSeq for the target rank with RELEASE to ensure GPU sees it
       __atomic_store_n(&ctx->doneSeqs[inProgressDesc->targetRank], inProgressDesc->seq, __ATOMIC_RELEASE); // sync with the custreamWait aquire semantic
       // Dequeue and free the completed Desc
@@ -324,6 +329,10 @@ static ncclResult_t ncclRmaProxyPollDesc(ncclGin_t *ncclGin, struct ncclRmaProxy
     if (readySeq >= pendingDesc->seq) {
       // Advance CI with RELEASE to ensure descriptor is consumed
       __atomic_store_n(&ctx->cis[peer], ci + 1, __ATOMIC_RELEASE);
+      // Issue NVTX3_RANGE_WITH_PARAMS
+      pendingDesc->nvtxRange = new ncclOptionalNvtxPayloadRangeWithId<NcclNvtxParamsIntRma>;
+      NVTX3_RANGE_WITH_PARAMS((*pendingDesc->nvtxRange), IntRMA, NcclNvtxParamsIntRma,
+      NVTX3_PAYLOAD(ctx->comm ? ctx->comm->commHash : 0, pendingDesc->size, pendingDesc->targetRank, -1, pendingDesc->logId));
 
       // Issue the network operation
       if (pendingDesc->signal.op == 0) {
@@ -707,6 +716,7 @@ ncclResult_t ncclRmaPutProxy(struct ncclComm* comm, struct ncclKernelPlan* plan,
     desc->size = task->count * ncclTypeSize(task->datatype);
     desc->targetRank = task->peer;
     desc->seq = rmaProxyCtx->opSeqs[task->peer]++;
+    desc->logId = task->logId;
     desc->rmaDescState = ncclRmaDescStatePending;
     desc->request = NULL;
 

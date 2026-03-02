@@ -267,6 +267,7 @@ struct ncclTaskP2p {
 struct ncclTaskRma {
   struct ncclTaskRma* next;
   ncclFunc_t func;
+  int64_t logId;
   int ctx;
   size_t count;
   ncclDataType_t datatype;
@@ -297,6 +298,7 @@ struct ncclTaskRma {
 struct ncclTaskRmaColl {
   struct ncclTaskRmaColl* next;
   ncclFunc_t func;
+  int64_t logId;
 
   // Window info for send buffer
   struct ncclDevrWindow* sendWin;
@@ -331,6 +333,8 @@ struct ncclTaskRmaColl {
 // The ncclRmaWorkBatch of the same ncclTaskRmaColl run in serial.
 struct ncclRmaWorkBatch {
   struct ncclRmaWorkBatch* next;
+  int batchIdx;
+  int64_t logId;
   int nProxyPut; // number of ncclTaskRma elements in proxyPutQueue
   int nProxyWaitSignal;
   int nCePut;

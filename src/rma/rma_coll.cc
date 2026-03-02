@@ -8,6 +8,7 @@
 #include "alloc.h"
 #include "checks.h"
 #include "comm.h"
+#include "nvtx_payload_schemas.h"
 #include "param.h"
 #include "rma/rma.h"
 #include <functional>
@@ -191,6 +192,11 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
   // Iterate through each RMA work batch
   struct ncclRmaWorkBatch* batch = ncclIntruQueueHead(&plan->rmaWorkBatchQueue);
   while (batch != nullptr) {
+    NVTX3_FUNC_WITH_PARAMS(RmaColl, NcclNvtxParamsRmaColl,
+      NVTX3_PAYLOAD(batch->logId, batch->batchIdx,
+                    batch->nProxyPut, batch->nProxyWaitSignal,
+                    batch->nCePut, batch->nCeWaitSignal));
+
     //For debugging: dump RMA work batch
     // if (comm->rank != 0) {
     //   dumpRmaWorkBatch(batch, comm->rank);
@@ -261,6 +267,8 @@ fail:
 static ncclResult_t allocRmaWorkBatch(struct ncclComm* comm, struct ncclRmaWorkBatch** batchOut) {
   struct ncclRmaWorkBatch* batch = ncclMemoryPoolAlloc<struct ncclRmaWorkBatch>(&comm->memPool_ncclRmaWorkBatch, &comm->memPermanent);
   batch->next = nullptr;
+  batch->batchIdx = 0;
+  batch->logId = 0;
   batch->nProxyPut = 0;
   batch->nProxyWaitSignal = 0;
   batch->nCePut = 0;
@@ -356,6 +364,8 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     void* sendBuff = (char*)task->sendWin->userPtr + task->sendWinOffset;
 
     while (curBatch != nullptr) {
+      curBatch->batchIdx = batchIdx;
+      curBatch->logId = task->logId;
       // CE Part: intraNode communication
       if (batchIdx == 0) {
         // Batch 0: nodeRound 0 (pure intraNode, all local ranks)
@@ -383,6 +393,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
 
               struct ncclTaskRma* cePutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
               cePutTask->func = ncclFuncPutSignal;
+              cePutTask->logId = task->logId;
               cePutTask->ctx = 0;
               cePutTask->count = chunkBytes / sched.eltSize;
               cePutTask->datatype = task->datatype;
@@ -417,6 +428,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
         if (nPeersWithSignals > 0) {
           struct ncclTaskRma* ceWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
           ceWaitTask->func = ncclFuncWaitSignal;
+          ceWaitTask->logId = task->logId;
           ceWaitTask->ctx = 0;
           ceWaitTask->bytes = 0;
           ceWaitTask->srcBuff = NULL;
@@ -462,6 +474,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
 
             struct ncclTaskRma* cePutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
             cePutTask->func = ncclFuncPutSignal;
+            cePutTask->logId = task->logId;
             cePutTask->ctx = 0;
             cePutTask->count = chunkBytes / sched.eltSize;
             cePutTask->datatype = task->datatype;
@@ -502,6 +515,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
         if (nPeersWithSignals > 0) {
           struct ncclTaskRma* ceWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
           ceWaitTask->func = ncclFuncWaitSignal;
+          ceWaitTask->logId = task->logId;
           ceWaitTask->ctx = 0;
           ceWaitTask->bytes = 0;
           ceWaitTask->srcBuff = NULL;
@@ -544,6 +558,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
           if (nSignalsFromRecvRankSameRail > 0) {
             struct ncclTaskRma* proxyWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
             proxyWaitTask->func = ncclFuncWaitSignal;
+            proxyWaitTask->logId = task->logId;
             proxyWaitTask->ctx = 0;
             proxyWaitTask->bytes = 0;
             proxyWaitTask->srcBuff = NULL;
@@ -587,6 +602,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
 
                 struct ncclTaskRma* proxyPutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
                 proxyPutTask->func = ncclFuncPutSignal;
+                proxyPutTask->logId = task->logId;
                 proxyPutTask->ctx = 0;
                 proxyPutTask->count = chunkBytes / sched.eltSize;
                 proxyPutTask->datatype = task->datatype;

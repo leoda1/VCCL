@@ -12,6 +12,8 @@
 #include "nccl_common.h"
 #include "gin/gin_host.h"
 #include "alloc.h"
+#include "nvtx.h"
+#include "nvtx_payload_schemas.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -45,12 +47,16 @@ struct ncclRmaProxyDesc {
 
   // Sequence number for the network operation
   uint64_t seq;
+  int64_t logId;
 
   // State of the network function descriptor
   ncclRmaDescState_t rmaDescState;
 
   // Request handle for the network operation
   void * request;
+
+  // nvtx range object
+  ncclOptionalNvtxPayloadRangeWithId<NcclNvtxParamsIntRma>* nvtxRange = nullptr;
 };
 
 struct ncclRmaProxyCtx {

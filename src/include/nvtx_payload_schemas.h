@@ -31,6 +31,7 @@ static constexpr char const* nccl_nvtxCudaDevStr = "CUDA device";
 static constexpr char const* nccl_nvtxRankStr = "Rank";
 static constexpr char const* nccl_nvtxNranksStr = "No. of ranks";
 static constexpr char const* nccl_nvtxMsgSizeStr = "Message size [bytes]";
+static constexpr char const* nccl_nvtxLogIdStr = "Log ID";
 static constexpr char const* nccl_nvtxReductionOpStrpStr = "Reduction operation";
 
 NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsCommInitAll, static constexpr,
@@ -111,7 +112,19 @@ NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsAlltoAll, static const
 NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsAlltoAllv, static constexpr,
   NCCL_NVTX_PAYLOAD_ENTRIES(
     (uint64_t, comm, TYPE_UINT64, nccl_nvtxCommStr),
-    (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr)
+    (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr),
+    (int64_t, logid, TYPE_INT64, nccl_nvtxLogIdStr)
+  )
+)
+
+NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsRmaColl, static constexpr,
+  NCCL_NVTX_PAYLOAD_ENTRIES(
+    (int64_t, logid, TYPE_INT64, nccl_nvtxLogIdStr),
+    (int, batchIndex, TYPE_INT, "Batch index"),
+    (int, nProxyPut, TYPE_INT, "No. of ProxyPut ops"),
+    (int, nProxyWaitSignal, TYPE_INT, "No. of ProxyWaitSignal ops"),
+    (int, nCePut, TYPE_INT, "No. of CePut ops"),
+    (int, nCeWaitSignal, TYPE_INT, "No. of CeWaitSignal ops")
   )
 )
 
@@ -179,6 +192,16 @@ NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsPut, static constexpr,
     (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr),
     (int, peer, TYPE_INT, "Peer rank"),
     (int, ctx, TYPE_INT, "Context ID")
+  )
+)
+
+NCCL_NVTX_DEFINE_STRUCT_WITH_SCHEMA_ENTRIES(NcclNvtxParamsIntRma, static constexpr,
+  NCCL_NVTX_PAYLOAD_ENTRIES(
+    (uint64_t, comm, TYPE_UINT64, nccl_nvtxCommStr),
+    (size_t, bytes, TYPE_SIZE, nccl_nvtxMsgSizeStr),
+    (int, peer, TYPE_INT, "Peer rank"),
+    (int, ctx, TYPE_INT, "Context ID"),
+    (int64_t, logid, TYPE_INT64, nccl_nvtxLogIdStr)
   )
 )
 
