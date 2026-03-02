@@ -342,6 +342,136 @@ static ncclResult_t rmaCollTasksPrepare(
   return ncclSuccess;
 }
 
+static ncclResult_t scheduleBarrierTasks(struct ncclComm* comm, struct ncclTaskRmaColl* task,
+                                         const struct ncclRmaCollSchedule* sched,
+                                         struct ncclKernelPlan* plan, struct ncclRmaWorkBatch* barrierBatch) {
+  // CE barrier tasks for all intra-node peers.
+  int localPeers = comm->nodeRanks[comm->node].localRanks;
+  if (localPeers > 1) {
+    int nLocalPeers = 0;
+    int* localPeerRanks = ncclMemoryStackAlloc<int>(&comm->memScoped, localPeers - 1);
+    int* localSignals = ncclMemoryStackAlloc<int>(&comm->memScoped, localPeers - 1);
+    for (int lr = 0; lr < localPeers; lr++) {
+      int localPeer = comm->nodeRanks[comm->node].localRankToRank[lr];
+      if (localPeer == comm->rank) continue;
+
+      struct ncclTaskRma* cePutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
+      cePutTask->func = ncclFuncPutSignal;
+      cePutTask->ctx = 0;
+      cePutTask->count = 0;
+      cePutTask->datatype = task->datatype;
+      cePutTask->bytes = 0;
+      cePutTask->srcBuff = (char*)task->sendWin->userPtr + task->sendWinOffset;
+      cePutTask->srcWinOffset = task->sendWinOffset;
+      cePutTask->srcWinHost = task->sendWin;
+      cePutTask->peer = localPeer;
+      cePutTask->peerWinOffset = task->sendWinOffset;
+      cePutTask->peerWinHost = task->sendWin;
+      cePutTask->signalMode = NCCL_SIGNAL;
+      cePutTask->peers = nullptr;
+      cePutTask->nsignals = nullptr;
+      cePutTask->npeers = 0;
+      ncclIntruQueueEnqueue(&barrierBatch->cePutQueue, cePutTask);
+      barrierBatch->nCePut++;
+
+      localPeerRanks[nLocalPeers] = localPeer;
+      localSignals[nLocalPeers] = 1;
+      nLocalPeers++;
+    }
+
+    if (nLocalPeers > 0) {
+      struct ncclTaskRma* ceWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
+      ceWaitTask->func = ncclFuncWaitSignal;
+      ceWaitTask->ctx = 0;
+      ceWaitTask->count = 0;
+      ceWaitTask->datatype = task->datatype;
+      ceWaitTask->bytes = 0;
+      ceWaitTask->srcBuff = nullptr;
+      ceWaitTask->srcWinOffset = 0;
+      ceWaitTask->srcWinHost = nullptr;
+      ceWaitTask->peer = 0;
+      ceWaitTask->peerWinOffset = 0;
+      ceWaitTask->peerWinHost = nullptr;
+      ceWaitTask->signalMode = NCCL_SIGNAL;
+      ceWaitTask->npeers = nLocalPeers;
+      ceWaitTask->peers = ncclMemoryStackAlloc<int>(&comm->memPermanent, nLocalPeers);
+      ceWaitTask->nsignals = ncclMemoryStackAlloc<int>(&comm->memPermanent, nLocalPeers);
+      memcpy(ceWaitTask->peers, localPeerRanks, nLocalPeers * sizeof(int));
+      memcpy(ceWaitTask->nsignals, localSignals, nLocalPeers * sizeof(int));
+      ncclIntruQueueEnqueue(&barrierBatch->ceWaitSignalQueue, ceWaitTask);
+      barrierBatch->nCeWaitSignal = 1;
+    }
+  }
+
+  // Proxy barrier tasks only when inter-node.
+  if (comm->nNodes > 1) {
+    int remoteNodes = comm->nNodes - 1;
+    if (remoteNodes > 0) {
+      int nRemotePeers = 0;
+      int* remotePeerRanks = ncclMemoryStackAlloc<int>(&comm->memScoped, remoteNodes);
+      int* remoteSignals = ncclMemoryStackAlloc<int>(&comm->memScoped, remoteNodes);
+      for (int node = 0; node < comm->nNodes; node++) {
+        if (node == comm->node) continue;
+        int remotePeer = comm->nodeRanks[node].localRankToRank[sched->localRank];
+
+        struct ncclTaskRma* proxyPutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
+        proxyPutTask->func = ncclFuncPutSignal;
+        proxyPutTask->ctx = 0;
+        proxyPutTask->count = 0;
+        proxyPutTask->datatype = task->datatype;
+        proxyPutTask->bytes = 0;
+        proxyPutTask->srcBuff = (char*)task->sendWin->userPtr + task->sendWinOffset;
+        proxyPutTask->srcWinOffset = task->sendWinOffset;
+        proxyPutTask->srcWinHost = task->sendWin;
+        proxyPutTask->peer = remotePeer;
+        proxyPutTask->peerWinOffset = task->sendWinOffset;
+        proxyPutTask->peerWinHost = task->sendWin;
+        proxyPutTask->signalMode = NCCL_SIGNAL;
+        proxyPutTask->peers = nullptr;
+        proxyPutTask->nsignals = nullptr;
+        proxyPutTask->npeers = 0;
+        ncclIntruQueueEnqueue(&barrierBatch->proxyPutQueue, proxyPutTask);
+        barrierBatch->nProxyPut++;
+
+        remotePeerRanks[nRemotePeers] = remotePeer;
+        remoteSignals[nRemotePeers] = 1;
+        nRemotePeers++;
+      }
+
+      if (nRemotePeers > 0) {
+        struct ncclTaskRma* proxyWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
+        proxyWaitTask->func = ncclFuncWaitSignal;
+        proxyWaitTask->ctx = 0;
+        proxyWaitTask->count = 0;
+        proxyWaitTask->datatype = task->datatype;
+        proxyWaitTask->bytes = 0;
+        proxyWaitTask->srcBuff = nullptr;
+        proxyWaitTask->srcWinOffset = 0;
+        proxyWaitTask->srcWinHost = nullptr;
+        proxyWaitTask->peer = 0;
+        proxyWaitTask->peerWinOffset = 0;
+        proxyWaitTask->peerWinHost = nullptr;
+        proxyWaitTask->signalMode = NCCL_SIGNAL;
+        proxyWaitTask->npeers = nRemotePeers;
+        proxyWaitTask->peers = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRemotePeers);
+        proxyWaitTask->nsignals = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRemotePeers);
+        memcpy(proxyWaitTask->peers, remotePeerRanks, nRemotePeers * sizeof(int));
+        memcpy(proxyWaitTask->nsignals, remoteSignals, nRemotePeers * sizeof(int));
+        ncclIntruQueueEnqueue(&barrierBatch->proxyWaitSignalQueue, proxyWaitTask);
+        barrierBatch->nProxyWaitSignal = 1;
+      }
+    }
+  }
+
+  barrierBatch->total = barrierBatch->nProxyPut + barrierBatch->nProxyWaitSignal +
+                        barrierBatch->nCePut + barrierBatch->nCeWaitSignal;
+  if (barrierBatch->total > 0) {
+    ncclIntruQueueEnqueue(&plan->rmaWorkBatchQueue, barrierBatch);
+  }
+
+  return ncclSuccess;
+}
+
 ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
   struct ncclKernelPlanner* planner = &comm->planner;
   struct ncclTaskRmaColl* task = ncclIntruQueueDequeue(&planner->collRmaTaskQueue);
@@ -356,6 +486,11 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     // Prepare schedule context
     struct ncclRmaCollSchedule sched;
     NCCLCHECK(rmaCollTasksPrepare(comm, task, &sched));
+
+    // Build entry barrier as the first batch.
+    struct ncclRmaWorkBatch* barrierBatch = nullptr;
+    NCCLCHECK(allocRmaWorkBatch(comm, &barrierBatch));
+    NCCLCHECK(scheduleBarrierTasks(comm, task, &sched, plan, barrierBatch));
 
     int batchIdx = 0;
     struct ncclRmaWorkBatch* curBatch = sched.batchesHead;
@@ -640,6 +775,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     // Link batches into plan's rmaWorkBatchQueue
     curBatch = sched.batchesHead;
     int nValidBatches = 0;
+    if (barrierBatch->total > 0) nValidBatches++;
     while (curBatch != nullptr) {
       struct ncclRmaWorkBatch* next = curBatch->next;
       if (curBatch->total > 0) {
