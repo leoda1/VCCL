@@ -343,7 +343,6 @@ static ncclResult_t rmaCollTasksPrepare(
 }
 
 static ncclResult_t scheduleBarrierTasks(struct ncclComm* comm, struct ncclTaskRmaColl* task,
-                                         const struct ncclRmaCollSchedule* sched,
                                          struct ncclKernelPlan* plan, struct ncclRmaWorkBatch* barrierBatch) {
   // CE barrier tasks for all intra-node peers.
   int localPeers = comm->nodeRanks[comm->node].localRanks;
@@ -412,7 +411,7 @@ static ncclResult_t scheduleBarrierTasks(struct ncclComm* comm, struct ncclTaskR
       int* remoteSignals = ncclMemoryStackAlloc<int>(&comm->memScoped, remoteNodes);
       for (int node = 0; node < comm->nNodes; node++) {
         if (node == comm->node) continue;
-        int remotePeer = comm->nodeRanks[node].localRankToRank[sched->localRank];
+        int remotePeer = comm->nodeRanks[node].localRankToRank[comm->localRank];
 
         struct ncclTaskRma* proxyPutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
         proxyPutTask->func = ncclFuncPutSignal;
@@ -490,7 +489,8 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     // Build entry barrier as the first batch.
     struct ncclRmaWorkBatch* barrierBatch = nullptr;
     NCCLCHECK(allocRmaWorkBatch(comm, &barrierBatch));
-    NCCLCHECK(scheduleBarrierTasks(comm, task, &sched, plan, barrierBatch));
+    barrierBatch->logId = task->logId;
+    NCCLCHECK(scheduleBarrierTasks(comm, task, plan, barrierBatch));
 
     int batchIdx = 0;
     struct ncclRmaWorkBatch* curBatch = sched.batchesHead;
@@ -499,7 +499,6 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     void* sendBuff = (char*)task->sendWin->userPtr + task->sendWinOffset;
 
     while (curBatch != nullptr) {
-      curBatch->batchIdx = batchIdx;
       curBatch->logId = task->logId;
       // CE Part: intraNode communication
       if (batchIdx == 0) {
@@ -775,10 +774,15 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
     // Link batches into plan's rmaWorkBatchQueue
     curBatch = sched.batchesHead;
     int nValidBatches = 0;
-    if (barrierBatch->total > 0) nValidBatches++;
+    int enqueueBatchIdx = 0;
+    if (barrierBatch->total > 0) {
+      barrierBatch->batchIdx = enqueueBatchIdx++;
+      nValidBatches++;
+    }
     while (curBatch != nullptr) {
       struct ncclRmaWorkBatch* next = curBatch->next;
       if (curBatch->total > 0) {
+        curBatch->batchIdx = enqueueBatchIdx++;
         ncclIntruQueueEnqueue(&plan->rmaWorkBatchQueue, curBatch);
         nValidBatches++;
       }
