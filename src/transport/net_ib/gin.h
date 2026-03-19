@@ -21,6 +21,7 @@ struct ncclGinIbCollComm {
   int           dev;
   void*         ginCtx;
   void*         ibvCtx;
+  uint32_t      qpRRCounter; // Round-robin counter for QP selection across Bond LAG ports
   ncclResult_t (*getProperties)(int dev, void *props);
   ncclResult_t (*allGather)(struct ncclGinIbCollComm *cComm, void *srcBuf, void *recvBuf, size_t len);
   ncclResult_t (*allToAll)(struct ncclGinIbCollComm *cComm, void *srcBuf, void *recvBuf, size_t len);

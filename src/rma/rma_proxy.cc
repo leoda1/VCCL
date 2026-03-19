@@ -453,6 +453,12 @@ ncclResult_t ncclRmaProxyRegister(struct ncclComm* comm, void* address, size_t s
           return ncclSystemError;
         }
       }
+      // Replicate window handles for virtual contexts that share the same physical GIN comm
+      for (int n = rmaProxyState->ginCommCount; n < rmaProxyState->rmaProxyCtxCount && n < NCCL_GIN_MAX_CONTEXTS; n++) {
+        int ginCommIdx = n % rmaProxyState->ginCommCount;
+        rmaHostWins[n] = rmaHostWins[ginCommIdx];
+        rmaDevWins[n] = rmaDevWins[ginCommIdx];
+      }
       return ncclSuccess;
 }
 

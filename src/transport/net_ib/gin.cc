@@ -370,7 +370,8 @@ ncclResult_t ncclGinIbProxyIPut(void *collComm, uint64_t srcOff, void *srcMhandl
   uint32_t rkey = dstMrHandle->rkeys[rank];
 
   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)cComm->fullSendComm[rank];
-  struct ncclIbQp *qp = &comm->base.qps[0];
+  int qpIdx = cComm->qpRRCounter++ % comm->base.nqps;
+  struct ncclIbQp *qp = &comm->base.qps[qpIdx];
 
   struct ncclIbRequest* req;
   NCCLCHECK(ncclIbGetRequest(&comm->base, &req));
@@ -424,7 +425,8 @@ ncclResult_t ncclGinIbProxyIPutSignal(void *collComm, uint64_t srcOff, void *src
   struct ncclIbGinProxyMrHandle *signalMrHandle = (struct ncclIbGinProxyMrHandle *)signalMhandle;
 
   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)cComm->fullSendComm[rank];
-  struct ncclIbQp *qp = &comm->base.qps[0];
+  int qpIdx = cComm->qpRRCounter++ % comm->base.nqps;
+  struct ncclIbQp *qp = &comm->base.qps[qpIdx];
   int devIndex = qp->devIndex;
 
   struct ncclIbRequest* req;

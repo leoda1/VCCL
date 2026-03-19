@@ -335,6 +335,7 @@ struct ncclRmaWorkBatch {
   struct ncclRmaWorkBatch* next;
   int batchIdx;
   int64_t logId;
+  int proxyCtx; // RMA proxy context index for proxy tasks in this batch
   int nProxyPut; // number of ncclTaskRma elements in proxyPutQueue
   int nProxyWaitSignal;
   int nCePut;

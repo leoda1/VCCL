@@ -222,7 +222,8 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
       batch->nProxyPut,
       ncclRmaPutProxy,
       [&](ncclRmaWork& w) {
-        w.rmaArgs->runParallel = 0; // rmaTasks in ProxyPut are run sequentially
+        w.rmaArgs->ctx = batch->proxyCtx;
+        w.rmaArgs->runParallel = 1; // rmaTasks in ProxyPut are run in parallel
         w.rmaArgs->nRmaTasksProxy = batch->nProxyPut;
         w.rmaTaskQueueProxy = batch->proxyPutQueue;
       },
@@ -233,6 +234,7 @@ ncclResult_t ncclLaunchRmaColl(struct ncclComm* comm, struct ncclKernelPlan* pla
       batch->nProxyWaitSignal,
       ncclRmaWaitSignalProxy,
       [&](ncclRmaWork& w) {
+        w.rmaArgs->ctx = batch->proxyCtx;
         w.rmaArgs->nRmaTasksProxy = batch->nProxyWaitSignal;
         w.rmaTaskQueueProxy = batch->proxyWaitSignalQueue;
       },
@@ -282,6 +284,7 @@ static ncclResult_t allocRmaWorkBatch(struct ncclComm* comm, struct ncclRmaWorkB
   batch->next = nullptr;
   batch->batchIdx = 0;
   batch->logId = 0;
+  batch->proxyCtx = 0;
   batch->nProxyPut = 0;
   batch->nProxyWaitSignal = 0;
   batch->nCePut = 0;
@@ -687,6 +690,8 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
       int proxyNodeIdx = batchIdx + 1;
       if (proxyNodeIdx < sched.nValidNodeRounds) {
         int proxyNodeDelta = sched.validNodeDeltas[proxyNodeIdx];
+        int proxyCtx = proxyNodeIdx % comm->config.numRmaCtx;
+        curBatch->proxyCtx = proxyCtx;
 
         // Phase 1: sched.rank <-- recvRankSameRail (same rail, interNode)
         {
@@ -706,7 +711,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
             struct ncclTaskRma* proxyWaitTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
             proxyWaitTask->func = ncclFuncWaitSignal;
             proxyWaitTask->logId = task->logId;
-            proxyWaitTask->ctx = 0;
+            proxyWaitTask->ctx = proxyCtx;
             proxyWaitTask->bytes = 0;
             proxyWaitTask->srcBuff = NULL;
             proxyWaitTask->srcWinHost = NULL;
@@ -750,7 +755,7 @@ ncclResult_t scheduleRmaCollTasksToPlan(struct ncclComm* comm, struct ncclKernel
                 struct ncclTaskRma* proxyPutTask = ncclMemoryPoolAlloc<struct ncclTaskRma>(&comm->memPool_ncclTaskRma, &comm->memPermanent);
                 proxyPutTask->func = ncclFuncPutSignal;
                 proxyPutTask->logId = task->logId;
-                proxyPutTask->ctx = 0;
+                proxyPutTask->ctx = proxyNodeIdx % comm->config.numRmaCtx;
                 proxyPutTask->count = chunkBytes / sched.eltSize;
                 proxyPutTask->datatype = task->datatype;
                 proxyPutTask->bytes = chunkBytes;
