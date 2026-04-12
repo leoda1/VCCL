@@ -4,7 +4,7 @@
 <h1 align="center">VCCL: Venus Collective Communication Library</h1>
 
 <p align="center">
-  <a href="asset/VCCL.pdf">📄 论文</a> | 
+  <a href="https://arxiv.org/abs/2510.00991">📄 论文</a> | 
   <a href="https://vccl-doc.readthedocs.io/">📚 技术文档</a> | 
   <a href="https://discord.gg/VBwk5PuY"><img src="asset/discord.svg" width="16" height="16" style="vertical-align: middle;"> Discord</a> | 
   <a href="asset/wechat_fig.png"><img src="asset/wechat.svg" width="16" height="16" style="vertical-align: middle;"> 微信交流群</a> | 
