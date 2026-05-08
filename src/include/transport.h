@@ -19,6 +19,8 @@
 #define TRANSPORT_NET 2
 #define TRANSPORT_COLLNET 3
 #define TRANSPORT_PROFILER 4
+#define TRANSPORT_PSM_P2P 5
+#define TRANSPORT_PSM_NET 6
 
 #include "proxy.h"
 #include "comm.h"
@@ -29,6 +31,8 @@ extern struct ncclTransport shmTransport;
 extern struct ncclTransport netTransport;
 extern struct ncclTransport collNetTransport;
 extern struct ncclTransport profilerTransport;
+extern struct ncclTransport psmP2pTransport;
+extern struct ncclTransport psmNetTransport;
 
 extern struct ncclTransport* ncclTransports[];
 // Forward declarations
@@ -37,6 +41,7 @@ struct ncclConnector;
 struct ncclComm;
 
 int64_t ncclParamMultiSegmentRegister();
+int64_t ncclParamPassSm();
 
 struct ncclPeerInfo {
   int rank;

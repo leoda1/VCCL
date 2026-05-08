@@ -934,6 +934,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
       if (regRecord->ipcInfos[peerLocalRank]) {
         // We already have IPC info for peerLocalRank, no need to register it, we can reuse it
         *regBufFlag = 1;
+        if (type == NCCL_IPC_SENDRECV && ncclParamPassSm()) regRecord->ipcInfos[peerLocalRank]->psm = true;
         if (isLegacyIpc) *isLegacyIpc = regRecord->ipcInfos[peerLocalRank]->impInfo.legacyIpcCap;
         INFO(NCCL_REG, "rank %d - IPC reuse buffer %p size %zu (baseAddr %p size %zu numSegments %d) to peer %d regAddr %p", comm->rank, userbuff, buffSize, (void*)regRecord->begAddr, regRecord->endAddr - regRecord->begAddr, regRecord->ipcInfos[peerLocalRank]->impInfo.numSegments, peerRank, regRecord->ipcInfos[peerLocalRank]->impInfo.rmtRegAddr);
       } else {
@@ -1028,6 +1029,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
           newInfo->impInfo.legacyIpcCap = ipcInfo->legacyIpcCap;
           newInfo->impInfo.numSegments = numSegments;
           newInfo->ipcProxyconn = proxyConn;
+          newInfo->psm = type == NCCL_IPC_SENDRECV && ncclParamPassSm();
           regRecord->ipcInfos[peerLocalRank] = newInfo;
           if (regRecord->regIpcAddrs.hostPeerRmtAddrs == NULL) {
             NCCLCHECKGOTO(ncclCalloc(&regRecord->regIpcAddrs.hostPeerRmtAddrs, comm->localRanks), ret, fail);
