@@ -14,7 +14,7 @@
 
 NCCL_PARAM(PassSm, "PASS_SM", 0);
 
-struct ncclTransport* ncclTransports[NTRANSPORTS+3] = {
+struct ncclTransport* ncclTransports[NTRANSPORTS] = {
   &p2pTransport,
   &shmTransport,
   &netTransport,

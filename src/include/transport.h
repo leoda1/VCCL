@@ -12,7 +12,7 @@
 #include "nvmlwrap.h"
 #include "core.h"
 
-#define NTRANSPORTS 4
+#define NTRANSPORTS 7
 #define TRANSPORT_UNDEFINED -1
 #define TRANSPORT_P2P 0
 #define TRANSPORT_SHM 1
