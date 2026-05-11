@@ -359,7 +359,7 @@ ncclResult_t dumpProxyState(struct ncclProxyProgressState* state) {
   return ncclSuccess;
 }
 
-static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyArgs* args, int subIndex) {
+static ncclResult_t ncclProxyOpToArgs(struct ncclProxyProgressState* state, struct ncclProxyOp* op, struct ncclProxyArgs* args, int subIndex) {
   struct ncclProxySubArgs* sub = args->subs+subIndex;
   if (subIndex >= NCCL_PROXY_MAX_SUBS) {
     WARN("Proxy append out of bounds");
@@ -428,7 +428,7 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
   args->state = ncclProxyOpReady;
   args->progress = op->connection->tcomm->proxyProgress;
   args->proxyAppendPtr = op->connection->proxyAppendPtr;
-  args->syncCond = op->syncCond;
+  args->syncCond = ncclPsmSyncCondResolve(state->syncCondPool, op->syncCondIdx);
 exit:
   if (args->pattern != ncclPatternProfiler) ncclProfilerStartProxyOpEvent(subIndex, args);
   return ncclSuccess;
@@ -441,12 +441,12 @@ static ncclResult_t ProxyAppend(struct ncclProxyProgressState* state, struct ncc
 
   if (args) {
     if (shared && args->opCount == op->opCount) {
-      NCCLCHECK(ncclProxyOpToArgs(op, args, args->nsubs));
+      NCCLCHECK(ncclProxyOpToArgs(state, op, args, args->nsubs));
       DEBUG_PROXY_PRINT("Insert (%d/%5ld/%5ld) as group with %5ld\n", shared, args->opCount, op->opCount, OP_INDEX(args));
     } else {
       struct ncclProxyArgs* prevArgs = args;
       NCCLCHECK(allocateArgs(state, &args));
-      NCCLCHECK(ncclProxyOpToArgs(op, args, 0));
+      NCCLCHECK(ncclProxyOpToArgs(state, op, args, 0));
       prevArgs->nextPeer = args;
       DEBUG_PROXY_PRINT("Insert  %5ld (%d/%5ld/%5ld) as nextPeer of %5ld\n", OP_INDEX(args), shared, prevArgs->opCount, args->opCount, OP_INDEX(prevArgs));
       *(args->proxyAppendPtr) = args;
@@ -454,7 +454,7 @@ static ncclResult_t ProxyAppend(struct ncclProxyProgressState* state, struct ncc
   } else {
     // Nothing running for that peer. Add to the list
     NCCLCHECK(allocateArgs(state, &args));
-    NCCLCHECK(ncclProxyOpToArgs(op, args, 0));
+    NCCLCHECK(ncclProxyOpToArgs(state, op, args, 0));
     if (state->active == NULL) {
       // Create the list
       DEBUG_PROXY_PRINT("Insert  %5ld (%d/%5ld) as first element\n", OP_INDEX(args), shared, args->opCount);
@@ -512,6 +512,14 @@ static ncclResult_t ncclLocalOpAppend(struct ncclComm* comm, struct ncclProxyCon
   if (proxyOp->ringAlgo) proxyOp->ringAlgo->incRefCount();
   op->next = -1;
   op->connection = proxyConn->connection;
+  if (op->syncCondIdx != PSM_SYNC_COND_IDX_NONE) {
+    struct psmSyncCondition* syncCond = ncclPsmSyncCondResolve(proxyOps->syncCondPool, op->syncCondIdx);
+    if (syncCond == NULL) {
+      WARN("PASS_SM sync condition slot %d is not mapped for proxy local rank %d", op->syncCondIdx, proxyConn->tpLocalRank);
+      return ncclInternalError;
+    }
+    syncCond->proxyOpCount.fetch_add(1, std::memory_order_acq_rel);
+  }
   if (proxyOps->nextOps == -1) {
     proxyOps->nextOps = proxyOps->nextOpsEnd = opIndex;
   } else {
@@ -1126,6 +1134,7 @@ struct ncclProxyInitReq {
 struct ncclProxyInitResp {
   ncclProxyConnection* connection;
   char devShmPath[6]; // "XXXXXX" - May or may not be set
+  char syncCondShmPath[6]; // "XXXXXX" - May or may not be set
 };
 
 ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, int proxyRank, struct ncclProxyConnector* proxyConn) {
@@ -1179,6 +1188,11 @@ ncclResult_t ncclProxyConnect(struct ncclComm* comm, int transport, int send, in
     if (proxyOps->pool == NULL) {
       NCCLCHECK(ncclShmOpen(poolPath, sizeof(poolPath), sizeof(struct ncclProxyOpsPool), (void**)(&proxyOps->pool), NULL, -1, &proxyOps->handle));
       proxyOps->nextOps = proxyOps->nextOpsEnd = proxyOps->freeOp = -1;
+    }
+    char syncCondPoolPath[] = "/dev/shm/nccl-XXXXXX";
+    strncpy(syncCondPoolPath+sizeof("/dev/shm/nccl-")-1, resp.syncCondShmPath, sizeof("XXXXXX")-1);
+    if (proxyOps->syncCondPool == NULL) {
+      NCCLCHECK(ncclShmOpen(syncCondPoolPath, sizeof(syncCondPoolPath), sizeof(struct psmSyncCondPool), (void**)(&proxyOps->syncCondPool), NULL, -1, &proxyOps->syncCondHandle));
     }
   }
   proxyConn->initialized = true;
@@ -1386,15 +1400,109 @@ fail:
   goto exit;
 }
 
+struct psmSyncCondition* ncclPsmSyncCondResolve(struct psmSyncCondPool* pool, int syncCondIdx) {
+  if (pool == NULL || syncCondIdx == PSM_SYNC_COND_IDX_NONE || syncCondIdx < 0 || syncCondIdx >= PSM_SYNC_COND_POOL_SIZE) return NULL;
+  if (pool->slotAlloc[syncCondIdx].load(std::memory_order_acquire) == 0) return NULL;
+  return pool->slots + syncCondIdx;
+}
+
+ncclResult_t ncclPsmSyncCondAlloc(struct ncclComm* comm, int* syncCondIdx) {
+  struct ncclProxyState* proxyState = comm->proxyState;
+  struct ncclProxyOps* proxyOps = proxyState ? proxyState->proxyOps : NULL;
+  int nLocalRanks = comm->sharedRes->tpNLocalRanks;
+  *syncCondIdx = PSM_SYNC_COND_IDX_NONE;
+  if (proxyOps == NULL) return ncclSuccess;
+
+  for (int idx = 0; idx < PSM_SYNC_COND_POOL_SIZE; idx++) {
+    bool hasPool = false;
+    bool available = true;
+    for (int r = 0; r < nLocalRanks; r++) {
+      struct psmSyncCondPool* pool = proxyOps[r].syncCondPool;
+      if (pool == NULL) continue;
+      hasPool = true;
+      if (pool->slotAlloc[idx].load(std::memory_order_acquire) != 0) {
+        available = false;
+        break;
+      }
+    }
+    if (!hasPool) return ncclSuccess;
+    if (!available) continue;
+
+    bool claimedRanks[NCCL_MAX_LOCAL_RANKS] = {false};
+    bool claimed = true;
+    for (int r = 0; r < nLocalRanks; r++) {
+      struct psmSyncCondPool* pool = proxyOps[r].syncCondPool;
+      if (pool == NULL) continue;
+      int expected = 0;
+      if (!pool->slotAlloc[idx].compare_exchange_strong(expected, 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        claimed = false;
+        break;
+      }
+      claimedRanks[r] = true;
+    }
+    if (!claimed) {
+      for (int r = 0; r < nLocalRanks; r++) {
+        if (claimedRanks[r]) proxyOps[r].syncCondPool->slotAlloc[idx].store(0, std::memory_order_release);
+      }
+      continue;
+    }
+
+    for (int r = 0; r < nLocalRanks; r++) {
+      struct psmSyncCondPool* pool = proxyOps[r].syncCondPool;
+      if (pool == NULL) continue;
+      pool->slots[idx].proxyReadyEvent.store(0, std::memory_order_relaxed);
+      pool->slots[idx].proxyOpCount.store(1, std::memory_order_relaxed);
+    }
+    *syncCondIdx = idx;
+    return ncclSuccess;
+  }
+
+  WARN("PASS_SM sync condition pool exhausted");
+  return ncclSuccess;
+}
+
+ncclResult_t ncclPsmSyncCondUploadDone(struct ncclComm* comm, int syncCondIdx) {
+  if (syncCondIdx == PSM_SYNC_COND_IDX_NONE) return ncclSuccess;
+  struct ncclProxyState* proxyState = comm->proxyState;
+  struct ncclProxyOps* proxyOps = proxyState ? proxyState->proxyOps : NULL;
+  if (proxyOps == NULL) return ncclSuccess;
+  int nLocalRanks = comm->sharedRes->tpNLocalRanks;
+  for (int r = 0; r < nLocalRanks; r++) {
+    struct psmSyncCondition* syncCond = ncclPsmSyncCondResolve(proxyOps[r].syncCondPool, syncCondIdx);
+    if (syncCond) syncCond->proxyOpCount.fetch_sub(1, std::memory_order_acq_rel);
+  }
+  return ncclSuccess;
+}
+
+ncclResult_t ncclPsmSyncCondFree(struct ncclComm* comm, int syncCondIdx) {
+  if (syncCondIdx == PSM_SYNC_COND_IDX_NONE) return ncclSuccess;
+  struct ncclProxyState* proxyState = comm->proxyState;
+  struct ncclProxyOps* proxyOps = proxyState ? proxyState->proxyOps : NULL;
+  if (proxyOps == NULL) return ncclSuccess;
+  int nLocalRanks = comm->sharedRes->tpNLocalRanks;
+  for (int r = 0; r < nLocalRanks; r++) {
+    struct psmSyncCondPool* pool = proxyOps[r].syncCondPool;
+    if (pool == NULL) continue;
+    pool->slots[syncCondIdx].proxyReadyEvent.store(0, std::memory_order_relaxed);
+    pool->slots[syncCondIdx].proxyOpCount.store(0, std::memory_order_relaxed);
+    pool->slotAlloc[syncCondIdx].store(0, std::memory_order_release);
+  }
+  return ncclSuccess;
+}
+
 static ncclResult_t proxyProgressInit(struct ncclProxyState* proxyState) {
   struct ncclProxyProgressState* state = &proxyState->progressState;
   if (state->opsPool == NULL) {
     int size = sizeof(struct ncclProxyOpsPool);
     struct ncclProxyOpsPool* pool = NULL;
+    struct psmSyncCondPool* syncCondPool = NULL;
 
     char shmPath[sizeof("/dev/shm/nccl-XXXXXX")];
     shmPath[0] = '\0';
     NCCLCHECK(ncclShmOpen(shmPath, sizeof(shmPath), size, (void**)&pool, NULL, proxyState->tpLocalnRanks, &state->handle));
+    char syncCondShmPath[sizeof("/dev/shm/nccl-XXXXXX")];
+    syncCondShmPath[0] = '\0';
+    NCCLCHECK(ncclShmOpen(syncCondShmPath, sizeof(syncCondShmPath), sizeof(struct psmSyncCondPool), (void**)&syncCondPool, NULL, proxyState->tpLocalnRanks, &state->syncCondHandle));
     // Init pool
     pool->nextOps = -1;
 
@@ -1407,8 +1515,10 @@ static ncclResult_t proxyProgressInit(struct ncclProxyState* proxyState) {
     ncclOsSetMutexCondShared(pool->mutex, pool->cond);
 
     state->opsPool = pool;
+    state->syncCondPool = syncCondPool;
 
     memcpy(state->opsPoolShmSuffix, shmPath+sizeof("/dev/shm/nccl-")-1, sizeof("XXXXXX")-1);
+    memcpy(state->syncCondShmSuffix, syncCondShmPath+sizeof("/dev/shm/nccl-")-1, sizeof("XXXXXX")-1);
 
     // All ops structures are created, we can start the progress thread
     NCCLCHECK(ncclProxyProgressCreate(proxyState));
@@ -1421,6 +1531,9 @@ static void proxyOpsFree(struct ncclProxyState* proxyState) {
   if (ncclShmClose(state->handle) != ncclSuccess) {
     WARN("[Service thread] shm close failed");
   }
+  if (ncclShmClose(state->syncCondHandle) != ncclSuccess) {
+    WARN("[Service thread] sync condition shm close failed");
+  }
 }
 
 ncclResult_t ncclProxyShmUnlink(struct ncclComm* comm) {
@@ -1429,6 +1542,9 @@ ncclResult_t ncclProxyShmUnlink(struct ncclComm* comm) {
 
   if (ncclShmUnlink(state->handle) != ncclSuccess) {
     WARN("[Service thread] proxy ops shm unlink failed");
+  }
+  if (ncclShmUnlink(state->syncCondHandle) != ncclSuccess) {
+    WARN("[Service thread] sync condition shm unlink failed");
   }
   return ncclSuccess;
 }
@@ -1454,6 +1570,7 @@ static ncclResult_t proxyConnInit(struct ncclProxyLocalPeer* peer, struct ncclPr
     NCCLCHECK(proxyProgressInit(proxyState));
     struct ncclProxyProgressState* state = &proxyState->progressState;
     strncpy(resp->devShmPath, state->opsPoolShmSuffix, sizeof(resp->devShmPath));
+    strncpy(resp->syncCondShmPath, state->syncCondShmSuffix, sizeof(resp->syncCondShmPath));
   }
   INFO(NCCL_NET|NCCL_PROXY, "New proxy %s connection %d from local rank %d, transport %d", (*connection)->send ? "send":"recv", id, (*connection)->tpLocalRank, (*connection)->transport);
   COMPILER_ATOMIC_STORE(&(*connection)->state, connInitialized, std::memory_order_release);
@@ -1931,6 +2048,9 @@ ncclResult_t ncclProxyStop(struct ncclComm* comm) {
           if (fd >= 0) {
             if (sharedProxyState->proxyOps[i].pool) {
               NCCLCHECK(ncclShmClose(sharedProxyState->proxyOps[i].handle));
+            }
+            if (sharedProxyState->proxyOps[i].syncCondPool) {
+              NCCLCHECK(ncclShmClose(sharedProxyState->proxyOps[i].syncCondHandle));
             }
             if (sharedProxyState->sharedDevMems[i]) {
               if (!ncclCuMemEnable()) {

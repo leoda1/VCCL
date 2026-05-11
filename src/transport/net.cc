@@ -1669,7 +1669,6 @@ static ncclResult_t netRegisterBuffer(ncclComm* comm, const void* userbuff, size
         netHandle = netHandle->next;
       }
       if (found) {
-        if (peerProxyConn->connection && peerProxyConn->connection->transport == TRANSPORT_PSM_NET) netHandle->psm = true;
         *outRegBufFlag = 1;
         outHandle[p] = netHandle->handle;
         INFO(NCCL_REG, "rank %d - NET reuse buffer %p size %ld (baseAddr %p size %ld) handle %p", comm->rank, userbuff, buffSize, (void*)regRecord->begAddr, regRecord->endAddr - regRecord->begAddr, netHandle->handle);
@@ -1685,7 +1684,6 @@ static ncclResult_t netRegisterBuffer(ncclComm* comm, const void* userbuff, size
             NCCLCHECK(ncclCalloc(&netHandle, 1));
             netHandle->handle = handle;
             netHandle->proxyConn = peerProxyConn;
-            netHandle->psm = peerProxyConn->connection && peerProxyConn->connection->transport == TRANSPORT_PSM_NET;
             netHandle->next = regRecord->netHandleHead;
             regRecord->netHandleHead = netHandle;
             outHandle[p] = handle;

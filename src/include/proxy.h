@@ -47,7 +47,10 @@ struct psmSyncCondition {
   std::atomic<int> proxyOpCount;
 };
 
+#define PSM_SYNC_COND_IDX_NONE (-1)
+
 struct ncclProxyArgs;
+struct ncclComm;
 typedef ncclResult_t (*proxyProgressFunc_t)(struct ncclProxyState*, struct ncclProxyArgs*);
 
 #define NCCL_PROXY_MAX_SUBS MAXCHANNELS
@@ -119,7 +122,7 @@ struct ncclProxyOp {
   pid_t pid;
   void* profilerContext;
   uint64_t workCounter;
-  struct psmSyncCondition* syncCond;
+  int syncCondIdx;
 
   struct ncclProxyOp *enqNext;
 };
@@ -222,6 +225,12 @@ struct ncclProxyArgs {
 // Otherwise we'd be unable to post half of them to free new elements. Each
 // p2p work contains a send and recv proxy op hence the 2x before it.
 #define MAX_OPS_PER_PEER (2*MAXCHANNELS*2*NCCL_MAX_DEV_WORK_P2P_PER_BATCH)
+#define PSM_SYNC_COND_POOL_SIZE (MAX_OPS_PER_PEER*NCCL_MAX_LOCAL_RANKS)
+
+struct psmSyncCondPool {
+  struct psmSyncCondition slots[PSM_SYNC_COND_POOL_SIZE];
+  std::atomic<int> slotAlloc[PSM_SYNC_COND_POOL_SIZE];
+};
 
 struct ncclProxyOpsPool {
   struct ncclProxyOp ops[MAX_OPS_PER_PEER*NCCL_MAX_LOCAL_RANKS];
@@ -235,6 +244,8 @@ struct ncclProxyOpsPool {
 struct ncclProxyOps {
   ncclProxyOpsPool* pool;
   ncclShmHandle_t handle;
+  psmSyncCondPool* syncCondPool;
+  ncclShmHandle_t syncCondHandle;
   int count;
   int freeOp;
   int nextOps;
@@ -271,6 +282,9 @@ struct ncclProxyProgressState {
   struct ncclProxyOpsPool* opsPool;
   ncclShmHandle_t handle;
   char opsPoolShmSuffix[6];
+  struct psmSyncCondPool* syncCondPool;
+  ncclShmHandle_t syncCondHandle;
+  char syncCondShmSuffix[6];
 
   std::thread thread;
   volatile int stop;
@@ -448,4 +462,8 @@ ncclResult_t ncclProxyClientBatchQueryFdBlocking(struct ncclComm* comm, struct n
 ncclResult_t ncclProxyStop(struct ncclComm* comm);
 ncclResult_t ncclProxyShmUnlink(struct ncclComm* comm);
 ncclResult_t ncclProxyDestroy(struct ncclComm* comm);
+ncclResult_t ncclPsmSyncCondAlloc(struct ncclComm* comm, int* syncCondIdx);
+ncclResult_t ncclPsmSyncCondUploadDone(struct ncclComm* comm, int syncCondIdx);
+ncclResult_t ncclPsmSyncCondFree(struct ncclComm* comm, int syncCondIdx);
+struct psmSyncCondition* ncclPsmSyncCondResolve(struct psmSyncCondPool* pool, int syncCondIdx);
 #endif

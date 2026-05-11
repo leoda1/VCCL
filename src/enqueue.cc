@@ -196,7 +196,7 @@ void ncclAddWorkBatchToPlan(
 }
 
 static void finishPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
-  plan->syncCondition = NULL;
+  plan->syncCondIdx = PSM_SYNC_COND_IDX_NONE;
   ncclKernelPlanner::WipPlan::Channel* wipChannels = comm->planner.wipPlan.channels;
   size_t workBytes = plan->workBytes;
   size_t batchBytes = plan->nWorkBatches*sizeof(struct ncclDevWorkBatch);
@@ -272,10 +272,12 @@ static void finishPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
     ncclIntruQueueEnqueue(&plan->proxyOpQueue, op);
     proxyOpCnt += 1;
   }
-  if (ncclParamPassSm() && plan->kernelFn == ncclDevKernelForFunc[ncclDevFuncId_P2p()]) {
-    plan->syncCondition = new psmSyncCondition;
-    plan->syncCondition->proxyReadyEvent.store(0, std::memory_order_relaxed);
-    plan->syncCondition->proxyOpCount.store(proxyOpCnt, std::memory_order_relaxed);
+  if (ncclParamPassSm() && plan->kernelFn == ncclDevKernelForFunc[ncclDevFuncId_P2p()] && proxyOpCnt > 0) {
+    ncclResult_t result = ncclPsmSyncCondAlloc(comm, &plan->syncCondIdx);
+    if (result != ncclSuccess || plan->syncCondIdx == PSM_SYNC_COND_IDX_NONE) {
+      WARN("PASS_SM failed to allocate proxy sync condition slot, result %d", result);
+      plan->syncCondIdx = PSM_SYNC_COND_IDX_NONE;
+    }
   }
 }
 
@@ -933,7 +935,8 @@ static ncclResult_t addP2pToPlan(
     chunkSize[dir] = chunkDataSize[dir];
     if (protocol[dir] == NCCL_PROTO_LL) chunkSize[dir] *= 2;
 
-    if (p2pTasks[dir] && p2pTasks[dir]->allowUB) {
+    bool allowZeroCopy = !ncclParamPassSm() || ncclParamPsmForceZeroCopy();
+    if (p2pTasks[dir] && p2pTasks[dir]->allowUB && allowZeroCopy) {
       if (network[dir]) {
         bool pxnUsed = !ncclPxnDisable(comm) && comm->isAllNvlink && comm->maxLocalRanks > 1;
         if (bytes[dir] > 0 && proxySameProcess[dir] && protocol[dir] == NCCL_PROTO_SIMPLE && (!pxnUsed)) {
@@ -1397,7 +1400,7 @@ static ncclResult_t uploadProxyOps(struct ncclComm* comm, struct ncclKernelPlan*
     op->profilerContext = comm->profilerContext;
     op->eActivationMask = geteActivationMask(op);
     op->taskEventHandle = gettaskEventHandle(op);
-    if (ncclParamPassSm()) op->syncCond = plan->syncCondition;
+    op->syncCondIdx = ncclParamPassSm() ? plan->syncCondIdx : PSM_SYNC_COND_IDX_NONE;
     ncclProfilerAddPidToProxyOp(op);
 
     uint64_t oldId = op->opCount;
@@ -1417,6 +1420,8 @@ static ncclResult_t uploadProxyOps(struct ncclComm* comm, struct ncclKernelPlan*
     op->opCount = oldId; // Restore for next uploadProxyOps()
     op = op->enqNext;
   }
+
+  if (ncclParamPassSm()) NCCLCHECK(ncclPsmSyncCondUploadDone(comm, plan->syncCondIdx));
 
   if (hasp2p) {
     for (int c=0; c < MAXCHANNELS; c++) {
@@ -1728,14 +1733,33 @@ ncclResult_t ncclLaunchKernelBefore_NoUncapturedCuda(struct ncclComm* comm, stru
 NCCL_PARAM(MemSyncDomain, "MEM_SYNC_DOMAIN", cudaLaunchMemSyncDomainRemote);
 #endif
 
+struct psmSyncCallbackArg {
+  struct ncclComm* comm;
+  int syncCondIdx;
+};
+
 static void CUDART_CB hostProxySyncCallback(void* args) {
   NCCL_NVTX3_FUNC_RANGE;
-  struct psmSyncCondition* syncCond = static_cast<struct psmSyncCondition*>(args);
-  syncCond->proxyReadyEvent.store(1, std::memory_order_release);
-  while (syncCond->proxyOpCount.load(std::memory_order_acquire) != 0) {
-    sched_yield();
+  struct psmSyncCallbackArg* cbArg = static_cast<struct psmSyncCallbackArg*>(args);
+  struct ncclComm* comm = cbArg->comm;
+  int syncCondIdx = cbArg->syncCondIdx;
+  struct ncclProxyOps* proxyOps = comm->proxyState ? comm->proxyState->proxyOps : NULL;
+  int nLocalRanks = comm->sharedRes->tpNLocalRanks;
+
+  if (proxyOps) {
+    for (int r = 0; r < nLocalRanks; r++) {
+      struct psmSyncCondition* syncCond = ncclPsmSyncCondResolve(proxyOps[r].syncCondPool, syncCondIdx);
+      if (syncCond) syncCond->proxyReadyEvent.store(1, std::memory_order_release);
+    }
+    for (int r = 0; r < nLocalRanks; r++) {
+      struct psmSyncCondition* syncCond = ncclPsmSyncCondResolve(proxyOps[r].syncCondPool, syncCondIdx);
+      while (syncCond && syncCond->proxyOpCount.load(std::memory_order_acquire) != 0) {
+        sched_yield();
+      }
+    }
   }
-  delete syncCond;
+  (void)ncclPsmSyncCondFree(comm, syncCondIdx);
+  free(cbArg);
 }
 
 ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan) {
@@ -1762,8 +1786,12 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
       CUDACHECKGOTO(cudaMemcpyAsync(node->dst, node->src, node->bytes, cudaMemcpyDeviceToDevice, launchStream), ret, do_return);
       node = node->next;
     }
-    if (plan->syncCondition) {
-      CUDACHECKGOTO(cudaLaunchHostFunc(launchStream, hostProxySyncCallback, plan->syncCondition), ret, do_return);
+    if (plan->syncCondIdx != PSM_SYNC_COND_IDX_NONE) {
+      struct psmSyncCallbackArg* cbArg = NULL;
+      NCCLCHECKGOTO(ncclCalloc(&cbArg, 1), ret, do_return);
+      cbArg->comm = comm;
+      cbArg->syncCondIdx = plan->syncCondIdx;
+      CUDACHECKGOTO(cudaLaunchHostFunc(launchStream, hostProxySyncCallback, cbArg), ret, do_return);
     }
     goto do_return;
   }

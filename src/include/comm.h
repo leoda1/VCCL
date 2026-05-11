@@ -398,7 +398,7 @@ struct ncclKernelPlan {
   struct ncclIntruQueue<struct ncclRmaWorkBatch, &ncclRmaWorkBatch::next> rmaWorkBatchQueue;
   struct ncclIntruQueue<struct ncclTaskColl, &ncclTaskColl::next> collTaskQueue;
   struct ncclIntruQueue<struct ncclProxyOp, &ncclProxyOp::enqNext> proxyOpQueue;
-  struct psmSyncCondition* syncCondition;
+  int syncCondIdx;
 
   // Profiler plugin
   void* groupApiEventHandle;
